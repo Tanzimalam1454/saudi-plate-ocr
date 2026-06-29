@@ -224,46 +224,54 @@ def degrade(img):
 # ---------------------------------------------------------------------------
 # Main generation
 # ---------------------------------------------------------------------------
-def build(count, out, val_frac, seed, montage):
-    random.seed(seed)
-    np.random.seed(seed)
-    img_dir = os.path.join(out, "images")
-    os.makedirs(img_dir, exist_ok=True)
+def _gen_one(arg):
+    """Render+degrade+split+save one plate. Top-level so multiprocessing can pickle it."""
+    i, out, seed, val_frac = arg
+    random.seed(seed + i)                       # deterministic + varied per plate
+    np.random.seed((seed + i) % (2 ** 31 - 1))
 
+    digits, letters = random_plate()
+    clean = render_clean(digits, letters)
+    plate = degrade(clean)
+
+    arr = np.asarray(plate)[:, :, ::-1]          # RGB -> BGR for split
+    top, bottom = ps.split_saudi_plate(arr)
+    if top is None:
+        return None
+
+    stem = f"plate_{i:06d}"
+    top_rel = f"images/{stem}_top.jpg"
+    bot_rel = f"images/{stem}_bottom.jpg"
+    Image.fromarray(top[:, :, ::-1]).save(os.path.join(out, top_rel), quality=92)
+    Image.fromarray(bottom[:, :, ::-1]).save(os.path.join(out, bot_rel), quality=92)
+
+    ar_lbl = ps.arabic_label(digits, letters)
+    la_lbl = ps.latin_label(digits, letters)
+    is_val = (i % 100) < int(round(val_frac * 100))
+    return (is_val, f"{top_rel}\t{ar_lbl}", f"{bot_rel}\t{la_lbl}")
+
+
+def build(count, out, val_frac, seed, montage, workers):
+    os.makedirs(os.path.join(out, "images"), exist_ok=True)
+    args = [(i, out, seed, val_frac) for i in range(count)]
     train_lines, val_lines = [], []
-    montage_imgs = []
 
-    for i in range(count):
-        digits, letters = random_plate()
-        clean = render_clean(digits, letters)
-        plate = degrade(clean)
+    def _collect(res, n):
+        if res is None:
+            return
+        is_val, top_line, bot_line = res
+        (val_lines if is_val else train_lines).extend([top_line, bot_line])
+        if (n + 1) % 2000 == 0:
+            print(f"  {n + 1}/{count}", flush=True)
 
-        arr = np.asarray(plate)[:, :, ::-1]          # RGB -> BGR for split
-        top, bottom = ps.split_saudi_plate(arr)
-        if top is None:
-            continue
-
-        top_img = Image.fromarray(top[:, :, ::-1])   # back to RGB
-        bot_img = Image.fromarray(bottom[:, :, ::-1])
-
-        stem = f"plate_{i:06d}"
-        top_rel = f"images/{stem}_top.jpg"
-        bot_rel = f"images/{stem}_bottom.jpg"
-        top_img.save(os.path.join(out, top_rel), quality=92)
-        bot_img.save(os.path.join(out, bot_rel), quality=92)
-
-        ar_lbl = ps.arabic_label(digits, letters)
-        la_lbl = ps.latin_label(digits, letters)
-
-        bucket = val_lines if random.random() < val_frac else train_lines
-        bucket.append(f"{top_rel}\t{ar_lbl}")
-        bucket.append(f"{bot_rel}\t{la_lbl}")
-
-        if montage and len(montage_imgs) < 12:
-            montage_imgs.append((plate.copy(), la_lbl, ar_lbl))
-
-        if (i + 1) % 1000 == 0:
-            print(f"  {i + 1}/{count}")
+    if workers and workers > 1:
+        import multiprocessing as mp
+        with mp.Pool(workers) as pool:
+            for n, res in enumerate(pool.imap_unordered(_gen_one, args, chunksize=16)):
+                _collect(res, n)
+    else:
+        for n, arg in enumerate(args):
+            _collect(_gen_one(arg), n)
 
     with open(os.path.join(out, "train_label.txt"), "w", encoding="utf-8") as f:
         f.write("\n".join(train_lines) + "\n")
@@ -276,8 +284,15 @@ def build(count, out, val_frac, seed, montage):
           f"(2 crops per plate).")
     print(f"Dict: {len(ps.dictionary_chars())} chars -> {out}/saudi_plate_dict.txt")
 
-    if montage and montage_imgs:
-        _save_montage(montage_imgs, os.path.join(out, "_montage.jpg"))
+    if montage:
+        items = []
+        for i in range(min(12, count)):
+            random.seed(seed + i)
+            np.random.seed((seed + i) % (2 ** 31 - 1))
+            d, l = random_plate()
+            items.append((degrade(render_clean(d, l)),
+                          ps.latin_label(d, l), ps.arabic_label(d, l)))
+        _save_montage(items, os.path.join(out, "_montage.jpg"))
         print(f"Montage: {out}/_montage.jpg")
 
 
@@ -306,5 +321,7 @@ if __name__ == "__main__":
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--montage", action="store_true",
                     help="save a _montage.jpg preview of the first 12 plates")
+    ap.add_argument("--workers", type=int, default=os.cpu_count(),
+                    help="parallel processes (default = all CPU cores)")
     args = ap.parse_args()
-    build(args.count, args.out, args.val_frac, args.seed, args.montage)
+    build(args.count, args.out, args.val_frac, args.seed, args.montage, args.workers)
