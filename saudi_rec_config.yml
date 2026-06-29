@@ -9,7 +9,7 @@
 
 Global:
   use_gpu: true
-  epoch_num: 80
+  epoch_num: 8
   log_smooth_window: 20
   print_batch_step: 50
   save_model_dir: ./output/saudi_rec
@@ -36,7 +36,7 @@ Optimizer:
   lr:
     name: Cosine
     learning_rate: 0.0005            # modest LR for fine-tuning
-    warmup_epoch: 5
+    warmup_epoch: 1
   regularizer:
     name: L2
     factor: 3.0e-05
