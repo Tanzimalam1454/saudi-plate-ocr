@@ -27,6 +27,7 @@ Global:
   use_space_char: true               # space separates digit group from letters
   distributed: false
   save_res_path: ./output/saudi_rec/predicts.txt
+  d2s_train_image_shape: [3, 48, 320]   # fixes input shape for inference export
 
 Optimizer:
   name: Adam
