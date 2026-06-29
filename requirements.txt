@@ -1,0 +1,10 @@
+# Data generation (run locally or in Colab)
+Pillow>=10.0
+numpy>=1.24
+opencv-python-headless>=4.8
+
+# Inference wrapper (saudi_rec_infer.py) — Jetson/runtime
+onnxruntime>=1.16          # or onnxruntime-gpu on the Jetson
+
+# Training happens in Colab; those deps are installed by the notebook:
+#   paddlepaddle-gpu==2.6.2, paddleocr, paddle2onnx

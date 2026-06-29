@@ -1,0 +1,23 @@
+# Generated data / training artifacts — never commit these (huge, reproducible)
+dataset/
+_sample/
+output/
+pretrain/
+inference/
+*.tar
+*.tar.gz
+*.onnx
+*.pdmodel
+*.pdiparams*
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+
+# Cloned upstream repo (clone in Colab instead)
+PaddleOCR/
