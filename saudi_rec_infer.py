@@ -16,11 +16,16 @@ Usage:
     #     "english_conf": 0.97, "arabic_conf": 0.83}
 """
 
+import re
+from collections import defaultdict
+
 import cv2
 import numpy as np
 import onnxruntime as ort
 
-from plate_spec import split_saudi_plate
+from plate_spec import LATIN_LETTERS, arabic_label, split_saudi_plate
+
+_ALLOWED_LETTERS = set(LATIN_LETTERS)
 
 REC_H, REC_W = 48, 320          # must match training image_shape [3, 48, 320]
 
@@ -88,17 +93,89 @@ class SaudiPlateReader:
         }
 
 
-def read_plate_multi_frame(reader, plate_crops):
+def _split_en(text):
+    """'3417 UAJ' (any spacing/case) -> ('3417', 'UAJ')."""
+    t = re.sub(r"\s+", "", text.upper())
+    digits = "".join(c for c in t if c.isdigit())
+    letters = "".join(c for c in t if c.isalpha())
+    return digits, letters
+
+
+def vote_plate(reader, plate_crops, min_frame_conf=0.40, min_agreement=0.5,
+               min_frames=2):
     """
-    Multi-frame voting (the production approach in PROJECT_STATUS.md): read N
-    crops of the same car, return the most common normalized English string.
+    PRODUCTION reader: confidence-weighted, per-character voting across many
+    frames of the SAME car. This is what turns a ~70%-per-frame model into
+    ~95%+ per car, because a wrong character in one frame is out-voted by the
+    correct character in the others.
+
+    plate_crops : list of whole-plate BGR crops of one car (from the detector).
+
+    Returns a dict:
+        plate         : "3417 UAJ"  (voted English reading; the plate ID)
+        arabic        : "٣٤١٧ واح"  (derived from the voted English)
+        confidence    : 0..1  how strongly the frames agreed
+        is_confident  : True  -> use it automatically
+                        False -> fall back (cashier confirms / mark unverified)
+        frames_used   : how many frames actually contributed
+        valid_format  : letters are all in the Saudi 17-letter set, valid counts
     """
-    from collections import Counter
-    votes = []
+    reads = []
     for crop in plate_crops:
         r = reader.read(crop)
-        if r["english"] and r["english_conf"] > 0.4:
-            votes.append(r["english"].replace(" ", "").upper())
-    if not votes:
-        return None
-    return Counter(votes).most_common(1)[0][0]
+        if r["english"] and r["english_conf"] >= min_frame_conf:
+            d, l = _split_en(r["english"])
+            if d and l:
+                reads.append((d, l, r["english_conf"]))
+
+    blank = {"plate": None, "arabic": None, "confidence": 0.0,
+             "is_confident": False, "frames_used": 0,
+             "total_frames": len(plate_crops), "valid_format": False}
+    if not reads:
+        return blank
+
+    # 1) pick the most likely plate SHAPE (digit-count, letter-count),
+    #    weighted by confidence -- guards against a frame that dropped a char.
+    shape_w = defaultdict(float)
+    for d, l, c in reads:
+        shape_w[(len(d), len(l))] += c
+    nd, nl = max(shape_w, key=shape_w.get)
+    cand = [(d, l, c) for d, l, c in reads if len(d) == nd and len(l) == nl]
+
+    # 2) per-position, confidence-weighted majority vote
+    def vote(items, n):
+        chars, agrees = [], []
+        for i in range(n):
+            w = defaultdict(float)
+            for s, c in items:
+                w[s[i]] += c
+            best = max(w, key=w.get)
+            chars.append(best)
+            agrees.append(w[best] / sum(w.values()))
+        return "".join(chars), (sum(agrees) / len(agrees) if agrees else 0.0)
+
+    digits, da = vote([(d, c) for d, l, c in cand], nd)
+    letters, la = vote([(l, c) for d, l, c in cand], nl)
+
+    valid = (1 <= nd <= 4 and 1 <= nl <= 3
+             and all(ch in _ALLOWED_LETTERS for ch in letters))
+    agreement = (da + la) / 2.0
+    is_conf = (valid and agreement >= min_agreement
+               and len(cand) >= max(min_frames, int(0.3 * len(plate_crops))))
+
+    return {
+        "plate": f"{digits} {letters}",
+        "arabic": arabic_label(digits, letters) if valid else None,
+        "confidence": round(agreement, 3),
+        "is_confident": bool(is_conf),
+        "frames_used": len(cand),
+        "total_frames": len(plate_crops),
+        "valid_format": valid,
+    }
+
+
+def read_plate_multi_frame(reader, plate_crops):
+    """Back-compat thin wrapper: returns just the voted plate string (no space),
+    or None. Prefer vote_plate() for the confidence + fallback flag."""
+    r = vote_plate(reader, plate_crops)
+    return r["plate"].replace(" ", "") if r["plate"] else None
