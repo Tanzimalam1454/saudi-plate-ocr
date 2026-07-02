@@ -48,8 +48,10 @@ def _preprocess(img):
     resized = cv2.resize(img, (new_w, REC_H), interpolation=cv2.INTER_LINEAR)
     canvas = np.zeros((REC_H, REC_W, 3), dtype=np.float32)
     canvas[:, :new_w, :] = resized
-    # PaddleOCR rec normalization: (x/255 - 0.5) / 0.5, channels-first
-    canvas = (canvas / 255.0 - 0.5) / 0.5
+    # This exported ONNX bakes the mean/scale step into its own graph, so it
+    # expects pixels in [0,1]. Feeding the usual (x/255-0.5)/0.5 double-
+    # normalizes and silently destroys the letters — must be plain x/255.
+    canvas = canvas / 255.0
     return canvas.transpose(2, 0, 1)            # CHW
 
 
